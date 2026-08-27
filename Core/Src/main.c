@@ -29,13 +29,13 @@
 #include "inv_mpu_dmp_motion_driver.h"
 #include "sw_i2c.h"
 #include <stdio.h>
-/* ============================ USART1 收发逻辑（自 task1 移植�?? ============================
- * 不定长接�?? + DMA 发�?�接口，数据流：
- *   DMA 收数据到缓冲�?? �?? IDLE 中断收尾（算帧长/入队/切缓冲）
- *   �?? 队列 usart1_receive_data �??"缓冲区编�??" �?? usart1receive 任务取数
- *   �?? 后续处理自行添加
- * 发�?�：usart1send 任务�?? DMA 发�?�（二�?�信号量 uart_tx_sem 防重入，
- *   TxCplt 回调释放�??
+/* ============================ USART1 收发逻辑（自 task1 移植�??? ============================
+ * 不定长接�??? + DMA 发�?�接口，数据流：
+ *   DMA 收数据到缓冲�??? �??? IDLE 中断收尾（算帧长/入队/切缓冲）
+ *   �??? 队列 usart1_receive_data �???"缓冲区编�???" �??? usart1receive 任务取数
+ *   �??? 后续处理自行添加
+ * 发�?�：usart1send 任务�??? DMA 发�?�（二�?�信号量 uart_tx_sem 防重入，
+ *   TxCplt 回调释放�???
  * ========================================================================================= */
 /* USER CODE END Includes */
 
@@ -71,7 +71,13 @@ union
 
 }usart_datatosend;
 
+typedef enum {mpu_mode_set} usart_command_type ;
 
+typedef struct 
+{
+  usart_command_type type;
+  int data[2];
+}command;
 
 
 /* USER CODE END PTD */
@@ -109,8 +115,8 @@ const osThreadAttr_t mpu6050read_attributes = {
 osThreadId_t usart1receiveHandle;
 const osThreadAttr_t usart1receive_attributes = {
   .name = "usart1receive",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal4,
 };
 /* Definitions for usartsend */
 osMessageQueueId_t usartsendHandle;
@@ -119,22 +125,22 @@ const osMessageQueueAttr_t usartsend_attributes = {
 };
 /* USER CODE BEGIN PV */
 
-/*==================== USART1 DMA 接收缓冲池（�?? task1 移植�?? ====================*/
-/* 环形缓冲池：5 个缓冲区轮流�?? DMA 写入。IDLE 中断收到�??帧后切换�??
- * 下一个缓冲区，避�?? DMA 覆盖任务还未读完的数�?? */
-uint8_t usart1_receive_pool[5][33]={0};   // 接收缓冲池（每格�??�?? 32 字节 + 1 字节余量�??
+/*==================== USART1 DMA 接收缓冲池（�??? task1 移植�??? ====================*/
+/* 环形缓冲池：5 个缓冲区轮流�??? DMA 写入。IDLE 中断收到�???帧后切换�???
+ * 下一个缓冲区，避�??? DMA 覆盖任务还未读完的数�??? */
+uint8_t usart1_receive_pool[5][33]={0};   // 接收缓冲池（每格�???�??? 32 字节 + 1 字节余量�???
 uint8_t usart1_receive_len[5]={0};        // 各缓冲区本次实际接收的帧长（字节），与缓冲池编号对应
-uint8_t usart1_receive_pool_idx=0;        // 当前 DMA 正在写入的缓冲区编号�??0~4 环形递增�??
+uint8_t usart1_receive_pool_idx=0;        // 当前 DMA 正在写入的缓冲区编号�???0~4 环形递增�???
 
-/*==================== 队列 / 信号量句柄（�?? main 中创建） ====================*/
-/* IDLE 中断 �?? usart1receive：传缓冲区编号（索引而非数据本体�?? */
+/*==================== 队列 / 信号量句柄（�??? main 中创建） ====================*/
+/* IDLE 中断 �??? usart1receive：传缓冲区编号（索引而非数据本体�??? */
 osMessageQueueId_t usart1_receive_dataHandle;
-/* UART 发�?�同步信号量：usart1send 发�?�前 acquire，DMA 发�?�完成中断里 release�??
- * 保证同一时刻只有�??�?? DMA 发�?�在进行，防止下次发送覆盖上次还没发完的数据 */
+/* UART 发�?�同步信号量：usart1send 发�?�前 acquire，DMA 发�?�完成中断里 release�???
+ * 保证同一时刻只有�???�??? DMA 发�?�在进行，防止下次发送覆盖上次还没发完的数据 */
 osSemaphoreId_t uart_tx_sem;
 
 
-volatile char mpu_usart_sendmode=1;//0原始1欧拉
+volatile char mpu_usart_sendmode=0;//0原始1欧拉
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -199,7 +205,7 @@ int main(void)
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   /* 创建 UART 发�?�完成信号量：max=1, 初�??=1（二值信号量），
-   * 用于 usart1send 任务�?? DMA 发�?�完成中断之间的同步 */
+   * 用于 usart1send 任务�??? DMA 发�?�完成中断之间的同步 */
   uart_tx_sem = osSemaphoreNew(1, 1, NULL);
   /* USER CODE END RTOS_SEMAPHORES */
 
@@ -213,8 +219,8 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  /* IDLE 中断 �?? usart1receive：传缓冲区编号（uint8_t，深�?? 3�??
-   * 队列满时非阻�?? put 直接丢帧索引，不阻塞 DMA 接收�?? */
+  /* IDLE 中断 �??? usart1receive：传缓冲区编号（uint8_t，深�??? 3�???
+   * 队列满时非阻�??? put 直接丢帧索引，不阻塞 DMA 接收�??? */
   usart1_receive_dataHandle = osMessageQueueNew(3, sizeof(uint8_t), NULL);
   /* USER CODE END RTOS_QUEUES */
 
@@ -317,11 +323,11 @@ static void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
-  /* ============ USART1 空闲中断 + DMA 不定长接收（�?? task1 移植�?? ============ */
-  /* 使能 IDLE 空闲中断：一帧数据发完后总线空闲�??1 字节时间无数据）
-   * 触发中断，在 USART1_IRQHandler 里收尾（详见 stm32f1xx_it.c�?? */
+  /* ============ USART1 空闲中断 + DMA 不定长接收（�??? task1 移植�??? ============ */
+  /* 使能 IDLE 空闲中断：一帧数据发完后总线空闲�???1 字节时间无数据）
+   * 触发中断，在 USART1_IRQHandler 里收尾（详见 stm32f1xx_it.c�??? */
   __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
-  /* 启动 DMA 接收：最多收 32 字节，写入缓冲池当前格，实际帧长�?? IDLE 中断算出 */
+  /* 启动 DMA 接收：最多收 32 字节，写入缓冲池当前格，实际帧长�??? IDLE 中断算出 */
   HAL_UART_Receive_DMA(&huart1, usart1_receive_pool[usart1_receive_pool_idx], 32);
   /* USER CODE END USART1_Init 2 */
 
@@ -385,8 +391,8 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
- * @brief USART1 DMA 发�?�完成回调（中断上下文，�?? task1 移植�??
- *        �??帧数�?? DMA 发完后释放信号量，�?�知 usart1send 可以发起下一次发�??
+ * @brief USART1 DMA 发�?�完成回调（中断上下文，�??? task1 移植�???
+ *        �???帧数�??? DMA 发完后释放信号量，�?�知 usart1send 可以发起下一次发�???
  */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -394,6 +400,43 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   {
     osSemaphoreRelease(uart_tx_sem);   // 释放发�?�权
   }
+}
+
+static const struct
+{
+  const char *name;
+  usart_command_type type;
+} command_table[] = 
+{
+  {"mpu_mode_set", mpu_mode_set},
+};
+
+int command_parse(const char *str, command *cmd)
+{
+  char name[32];
+  int cnt, i;
+
+  if (str == NULL || cmd == NULL)
+    return -1;
+  if (str[0] != '/')
+    return -1;
+
+  cmd->data[0] = 0;
+  cmd->data[1] = 0;
+
+  cnt = sscanf(str, "/%31s %d %d", name, &cmd->data[0], &cmd->data[1]);
+  if (cnt < 1) 
+    return -1;
+
+  for (i = 0; i < (int)(sizeof(command_table) / sizeof(command_table[0])); i++)
+  {
+    if (strcmp(name, command_table[i].name) == 0)
+    {
+      cmd->type = command_table[i].type;
+      return 0;
+    }
+  }
+  return -2;
 }
 /* USER CODE END 4 */
 
@@ -407,8 +450,8 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 void Startusart1sendTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  uint8_t tosend[64] = {0}; // 发�?�缓冲：数据来源与内容自行填�??
-  uint16_t tosend_len = 0;  // 发�?�长度（字节�??
+  uint8_t tosend[64] = {0}; // 发�?�缓冲：数据来源与内容自行填�???
+  uint16_t tosend_len = 0;  // 发�?�长度（字节�???
   usart_datatosend datatosend;
   /* Infinite loop */
   for (;;)
@@ -440,7 +483,7 @@ void Startusart1sendTask(void *argument)
 void Startmpu6050readTask(void *argument)
 {
   /* USER CODE BEGIN Startmpu6050readTask */
-  /* ====== 初始�?? ====== */
+  /* ====== 初始�??? ====== */
   sw_i2c_init();
 
   struct int_param_s int_param = {0};
@@ -456,8 +499,8 @@ void Startmpu6050readTask(void *argument)
   mpu_set_dmp_state(1);
 
   /* ====== 循环读取 ====== */
-  mpu6050_xyz xyz; // 六个原始数据：陀螺仪 + 加�?�度�??
-  mpu6050_pry pry; // 解算后的欧拉�??
+  mpu6050_xyz xyz; // 六个原始数据：陀螺仪 + 加�?�度�???
+  mpu6050_pry pry; // 解算后的欧拉�???
   usart_datatosend tosend;
   short sensors;
   unsigned char more;
@@ -495,7 +538,7 @@ void Startmpu6050readTask(void *argument)
         tosend.data.pry = pry;
       }
       osMessageQueuePut(usartsendHandle, &tosend, 0, 0);
-      /* TODO: �?? xyz / pry 通过 USART1 或其他方式输�?? */
+      /* TODO: �??? xyz / pry 通过 USART1 或其他方式输�??? */
     }
   }
   /* USER CODE END Startmpu6050readTask */
@@ -511,16 +554,36 @@ void Startmpu6050readTask(void *argument)
 void Startusart1receiveTask(void *argument)
 {
   /* USER CODE BEGIN Startusart1receiveTask */
-  uint8_t *receive;             // 指向缓冲池中本次收到的数�??
-  uint8_t receive_idx;          // IDLE 中断传来的缓冲区编号
-  uint8_t receive_len;          // 本帧实际长度
-  /* Infinite loop */
-  for(;;)
+  uint8_t *receive;   
+  uint8_t receive_idx; 
+  uint8_t receive_len;
+  char cmdbuf[34];
+  command cmd;    
+
+  for (;;)
   {
 
     osMessageQueueGet(usart1_receive_dataHandle, &receive_idx, NULL, HAL_MAX_DELAY);
     receive = usart1_receive_pool[receive_idx];
     receive_len = usart1_receive_len[receive_idx];
+
+    if (receive_len > 32)
+      receive_len = 32;
+    memcpy(cmdbuf, receive, receive_len);
+    cmdbuf[receive_len] = '\0';
+
+    if (command_parse(cmdbuf, &cmd) == 0)
+    {
+      switch (cmd.type)
+      {
+      case mpu_mode_set:
+
+        mpu_usart_sendmode = (char)cmd.data[0];
+        break;
+      default:
+        break;
+      }
+    }
   }
   /* USER CODE END Startusart1receiveTask */
 }

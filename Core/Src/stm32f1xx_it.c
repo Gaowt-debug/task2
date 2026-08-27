@@ -63,7 +63,7 @@ extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN EV */
-/* USART1 接收缓冲池与队列句柄（自 task1 移植，定义在 main.c�? */
+/* USART1 鎺ユ敹缂撳啿姹犱笌闃熷垪鍙ユ焺锛堣嚜 task1 绉绘锛屽畾涔夊�? main.c�?? */
 extern uint8_t usart1_receive_pool[5][33];
 extern uint8_t usart1_receive_len[5];
 extern uint8_t usart1_receive_pool_idx;
@@ -216,30 +216,31 @@ void TIM4_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
-  /* ============ USART1 空闲中断收帧（不定长接收核心逻辑，自 task1 移植�? ============
-   * 原理：DMA 循环把收到的字节写入缓冲池当前格；一帧数据发完后总线
-   * 空闲触发 IDLE 中断，此处收尾：算出实际帧长 �? 通知任务 �? 切换
-   * 到下�?格缓冲重�? DMA�?
+  /* ============ USART1 绌洪棽涓柇�?跺抚锛堜笉�?�氶暱鎺ユ敹鏍稿績閫昏緫锛岃�? task1 绉绘锛? ============
+   * 鍘熺悊锛欴MA 寰幆鎶婃敹鍒扮殑�?�楄妭鍐欏叆缂撳啿姹犲綋鍓嶆牸锛涗竴甯ф暟鎹彂�?�屽悗鎬荤嚎
+   * 绌洪棽瑙�?�? IDLE 涓柇锛屾澶勬敹灏撅細绠楀嚭�?�為檯甯ч�? �?? 閫氱煡浠诲姟 �?? 鍒囨�?
+   * 鍒颁笅涓?鏍肩紦鍐查噸�?? DMA�??
    */
   uint8_t len_e;
   if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE) != RESET)
   {
-    __HAL_UART_CLEAR_IDLEFLAG(&huart1);            // 清除 IDLE 标志
-    HAL_UART_DMAStop(&huart1);                     // 停止本次 DMA 传输
-    /* DMA 剩余计数 = 32 - 实际收到字节数，反推出本帧长�? */
+    __HAL_UART_CLEAR_IDLEFLAG(&huart1);            // 娓呴�? IDLE 鏍囧�?
+    HAL_DMA_Abort(&hdma_usart1_rx);                     // 鍋滄鏈 DMA 浼犺�?
+    /* DMA 鍓╀綑璁℃暟 = 32 - 瀹為檯鏀跺埌瀛楄妭鏁帮紝鍙嶆帹鍑烘湰甯ч暱�?? */
     len_e = __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
     usart1_receive_len[usart1_receive_pool_idx] = 32 - len_e;
 
-    /* �?"缓冲区编�?"（不是数据本体）入队，任务凭编号去缓冲池取数据；
-     * 非阻�? put：队列满（返�? osErrorResource）时丢弃本帧索引 */
+    /* �??"缂撳啿鍖虹紪�??"锛堜笉鏄暟鎹湰浣擄級鍏ラ槦锛屼换鍔�?�嚟缂栧彿鍘荤紦鍐叉睜鍙栨暟鎹�?
+     * 闈為樆濉? put锛氶槦鍒楁弧锛堣繑鍥? osErrorResource锛夋椂涓㈠純鏈抚绱㈠紩 */
     if(osMessageQueuePut(usart1_receive_dataHandle, &usart1_receive_pool_idx, NULL, 0)!=osErrorResource)
     {
 
     }
-    /* 无论入队是否成功都切换到下一格：队列满时新数据覆盖旧格，
-     * 不阻�? DMA 接收（丢新保旧策略的已知取舍�? */
+    /* 鏃犺鍏ラ槦鏄惁鎴愬姛閮藉垏鎹㈠埌涓嬩竴鏍硷細闃熷垪婊℃椂鏂版暟鎹鐩栨棫鏍硷紝
+     * 涓嶉樆濉? DMA 鎺ユ敹锛堜涪鏂颁繚鏃х瓥鐣ョ殑宸茬煡鍙栬垗�?? */
     usart1_receive_pool_idx = (usart1_receive_pool_idx + 1) % 5;
-    /* 用新的缓冲区重启 DMA 接收，等下一�? */
+    /* 鐢ㄦ柊鐨勭紦鍐插尯閲嶅惎 DMA 鎺ユ敹锛�?瓑涓嬩竴�?? */
+    huart1.RxState = HAL_UART_STATE_READY;  /* HAL_DMA_Abort does not reset RxState; reset manually before restart */
     HAL_UART_Receive_DMA(&huart1, usart1_receive_pool[usart1_receive_pool_idx], 32);
   }
 
