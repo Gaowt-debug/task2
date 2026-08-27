@@ -29,41 +29,41 @@
 #include "inv_mpu_dmp_motion_driver.h"
 #include "sw_i2c.h"
 #include <stdio.h>
-/* ============================ USART1 收发逻辑（自 task1 移植�??? ============================
- * 不定长接�??? + DMA 发�?�接口，数据流：
- *   DMA 收数据到缓冲�??? �??? IDLE 中断收尾（算帧长/入队/切缓冲）
- *   �??? 队列 usart1_receive_data �???"缓冲区编�???" �??? usart1receive 任务取数
- *   �??? 后续处理自行添加
- * 发�?�：usart1send 任务�??? DMA 发�?�（二�?�信号量 uart_tx_sem 防重入，
- *   TxCplt 回调释放�???
+/* ============================ USART1 收发逻辑（自 task1 迁移） ============================
+ * 不定长接收 + DMA 发送，数据流：
+ *   接收：DMA 收数据到缓冲池 → IDLE 中断收尾（算帧长 / 入队 / 切缓冲区）
+ *         → 队列 usart1_receive_data 传缓冲区编号 → usart1receive 任务取数处理
+ *   发送：usart1send 任务格式化 → DMA 发送（二值信号量 uart_tx_sem 防重入，
+ *         TxCplt 回调释放）
  * ========================================================================================= */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+/* 串口发送数据类型：mpu_pry=欧拉角，mpu_xyz=原始六轴 */
 typedef enum {mpu_pry,mpu_xyz} usart_data_type ;
 
-typedef struct 
+/* 欧拉角（单位：度） */
+typedef struct
 {
 float pitch;
 float roll;
 float yaw;
 } mpu6050_pry;
 
-
-typedef struct 
+/* 六轴原始数据（陀螺仪 / 加速度计输出） */
+typedef struct
 {
 short gyro[3];
 short accel[3];
 } mpu6050_xyz;
 
-
-
-typedef struct 
+/* 串口待发送数据：type 决定联合体中装 xyz 还是 pry */
+typedef struct
 {
   usart_data_type type;
-union 
+union
 {
   mpu6050_xyz xyz;
   mpu6050_pry pry;
@@ -71,14 +71,15 @@ union
 
 }usart_datatosend;
 
+/* 串口命令类型（与 command_table 中的表项对应） */
 typedef enum {mpu_mode_set} usart_command_type ;
 
-typedef struct 
+/* 解析后的命令：命令类型 + 最多 2 个 int 参数 */
+typedef struct
 {
   usart_command_type type;
   int data[2];
 }command;
-
 
 /* USER CODE END PTD */
 
@@ -125,22 +126,21 @@ const osMessageQueueAttr_t usartsend_attributes = {
 };
 /* USER CODE BEGIN PV */
 
-/*==================== USART1 DMA 接收缓冲池（�??? task1 移植�??? ====================*/
-/* 环形缓冲池：5 个缓冲区轮流�??? DMA 写入。IDLE 中断收到�???帧后切换�???
- * 下一个缓冲区，避�??? DMA 覆盖任务还未读完的数�??? */
-uint8_t usart1_receive_pool[5][33]={0};   // 接收缓冲池（每格�???�??? 32 字节 + 1 字节余量�???
-uint8_t usart1_receive_len[5]={0};        // 各缓冲区本次实际接收的帧长（字节），与缓冲池编号对应
-uint8_t usart1_receive_pool_idx=0;        // 当前 DMA 正在写入的缓冲区编号�???0~4 环形递增�???
+/*==================== USART1 DMA 接收缓冲池（自 task1 迁移） ====================*/
+/* 环形缓冲池：5 个缓冲区轮流使用，DMA 写入其中一格，IDLE 中断收到一帧后
+ * 切换到下一格，避免 DMA 覆盖任务尚未读完的数据 */
+uint8_t usart1_receive_pool[5][33]={0};   // 接收缓冲池（每格 32 字节 + 1 字节余量）
+uint8_t usart1_receive_len[5]={0};        // 各格本次实际接收的帧长（字节）
+uint8_t usart1_receive_pool_idx=0;        // 当前 DMA 正在写入的格编号（0~4 环形递增）
 
-/*==================== 队列 / 信号量句柄（�??? main 中创建） ====================*/
-/* IDLE 中断 �??? usart1receive：传缓冲区编号（索引而非数据本体�??? */
+/*==================== 队列 / 信号量句柄（在 main 中创建） ====================*/
+/* IDLE 中断 → usart1receive：传递缓冲区编号（索引而非数据本体） */
 osMessageQueueId_t usart1_receive_dataHandle;
-/* UART 发�?�同步信号量：usart1send 发�?�前 acquire，DMA 发�?�完成中断里 release�???
- * 保证同一时刻只有�???�??? DMA 发�?�在进行，防止下次发送覆盖上次还没发完的数据 */
+/* UART 发送同步信号量：usart1send 发送前 acquire，DMA 发送完成中断里 release，
+ * 保证同一时刻只有一次 DMA 发送在进行，防止新数据覆盖尚未发完的旧数据 */
 osSemaphoreId_t uart_tx_sem;
 
-
-volatile char mpu_usart_sendmode=0;//0原始1欧拉
+volatile char mpu_usart_sendmode=0;// 0:发送原始数据 1:发送欧拉角
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -204,8 +204,8 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
-  /* 创建 UART 发�?�完成信号量：max=1, 初�??=1（二值信号量），
-   * 用于 usart1send 任务�??? DMA 发�?�完成中断之间的同步 */
+  /* 创建 UART 发送完成信号量：max=1、初值=1（二值信号量）
+   * 用于 usart1send 任务与 DMA 发送完成中断之间的同步 */
   uart_tx_sem = osSemaphoreNew(1, 1, NULL);
   /* USER CODE END RTOS_SEMAPHORES */
 
@@ -219,8 +219,8 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  /* IDLE 中断 �??? usart1receive：传缓冲区编号（uint8_t，深�??? 3�???
-   * 队列满时非阻�??? put 直接丢帧索引，不阻塞 DMA 接收�??? */
+  /* IDLE 中断 → usart1receive：传缓冲区编号（uint8_t，深度 3）
+   * 队列满时非阻塞 put 直接丢帧，不阻塞 DMA 接收 */
   usart1_receive_dataHandle = osMessageQueueNew(3, sizeof(uint8_t), NULL);
   /* USER CODE END RTOS_QUEUES */
 
@@ -323,11 +323,11 @@ static void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
-  /* ============ USART1 空闲中断 + DMA 不定长接收（�??? task1 移植�??? ============ */
-  /* 使能 IDLE 空闲中断：一帧数据发完后总线空闲�???1 字节时间无数据）
-   * 触发中断，在 USART1_IRQHandler 里收尾（详见 stm32f1xx_it.c�??? */
+  /* ============ USART1 空闲中断 + DMA 不定长接收（自 task1 迁移） ============ */
+  /* 使能 IDLE 空闲中断：一帧收完后总线空闲（1 字节时间无新数据）即触发中断，
+   * 收尾逻辑在 USART1_IRQHandler 里（详见 stm32f1xx_it.c） */
   __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
-  /* 启动 DMA 接收：最多收 32 字节，写入缓冲池当前格，实际帧长�??? IDLE 中断算出 */
+  /* 启动 DMA 接收：单帧最多 32 字节，写入缓冲池当前格，实际帧长由 IDLE 中断算出 */
   HAL_UART_Receive_DMA(&huart1, usart1_receive_pool[usart1_receive_pool_idx], 32);
   /* USER CODE END USART1_Init 2 */
 
@@ -391,26 +391,33 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
- * @brief USART1 DMA 发�?�完成回调（中断上下文，�??? task1 移植�???
- *        �???帧数�??? DMA 发完后释放信号量，�?�知 usart1send 可以发起下一次发�???
+ * @brief USART1 DMA 发送完成回调（中断上下文，自 task1 迁移）
+ *        一帧 DMA 发完后释放信号量，告知 usart1send 可以发起下一次发送
  */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
-    osSemaphoreRelease(uart_tx_sem);   // 释放发�?�权
+    osSemaphoreRelease(uart_tx_sem);   // 释放发送权，允许下一次 DMA 发送
   }
 }
 
+/* 命令表：命令名 → 命令类型的映射；新增命令在此加一行，并在任务里加处理分支 */
 static const struct
 {
   const char *name;
   usart_command_type type;
-} command_table[] = 
+} command_table[] =
 {
   {"mpu_mode_set", mpu_mode_set},
 };
 
+/**
+ * @brief  解析串口命令行，格式 "/<命令名> <参数1> <参数2>"
+ * @param  str 待解析字符串（须以 '/' 开头）
+ * @param  cmd 解析结果输出（命令类型 + 两个 int 参数）
+ * @retval 0 成功；-1 格式错误；-2 未知命令名
+ */
 int command_parse(const char *str, command *cmd)
 {
   char name[32];
@@ -425,7 +432,7 @@ int command_parse(const char *str, command *cmd)
   cmd->data[1] = 0;
 
   cnt = sscanf(str, "/%31s %d %d", name, &cmd->data[0], &cmd->data[1]);
-  if (cnt < 1) 
+  if (cnt < 1)
     return -1;
 
   for (i = 0; i < (int)(sizeof(command_table) / sizeof(command_table[0])); i++)
@@ -450,22 +457,24 @@ int command_parse(const char *str, command *cmd)
 void Startusart1sendTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  uint8_t tosend[64] = {0}; // 发�?�缓冲：数据来源与内容自行填�???
-  uint16_t tosend_len = 0;  // 发�?�长度（字节�???
+  uint8_t tosend[64] = {0}; // 发送缓冲：格式化后的待发字符串
+  uint16_t tosend_len = 0;  // 发送长度（字节）
   usart_datatosend datatosend;
   /* Infinite loop */
   for (;;)
   {
-    osMessageQueueGet(usartsendHandle, &datatosend, NULL, HAL_MAX_DELAY);
+    osMessageQueueGet(usartsendHandle, &datatosend, NULL, HAL_MAX_DELAY); // 阻塞等待 mpu 任务产出数据
 
+    /* 按数据类型格式化：原始模式 "g0,g1,g2,a0,a1,a2\n"，欧拉角模式 "pitch,roll,yaw\n" */
     if (datatosend.type == mpu_xyz)
-      tosend_len = (uint16_t)sprintf((char *)tosend, "G:%d,%d,%d A:%d,%d,%d\n",
+      tosend_len = (uint16_t)sprintf((char *)tosend, "%d,%d,%d,%d,%d,%d\n",
                                      datatosend.data.xyz.gyro[0], datatosend.data.xyz.gyro[1], datatosend.data.xyz.gyro[2],
                                      datatosend.data.xyz.accel[0], datatosend.data.xyz.accel[1], datatosend.data.xyz.accel[2]);
     else
-      tosend_len = (uint16_t)sprintf((char *)tosend, "P:%.2f R:%.2f Y:%.2f\n",
+      tosend_len = (uint16_t)sprintf((char *)tosend, "%.2f,%.2f,%.2f\n",
                                      datatosend.data.pry.pitch, datatosend.data.pry.roll, datatosend.data.pry.yaw);
 
+    /* 拿到发送权（确保上一次 DMA 已发完）再启动本次 DMA 发送 */
     osSemaphoreAcquire(uart_tx_sem, HAL_MAX_DELAY);
 
     HAL_UART_Transmit_DMA(&huart1, tosend, tosend_len);
@@ -483,38 +492,50 @@ void Startusart1sendTask(void *argument)
 void Startmpu6050readTask(void *argument)
 {
   /* USER CODE BEGIN Startmpu6050readTask */
-  /* ====== 初始�??? ====== */
-  sw_i2c_init();
+  /* ====== 初始化 ====== */
+  sw_i2c_init();                                      // 软件 I2C（PB6/PB7，开漏+上拉）
 
   struct int_param_s int_param = {0};
-  mpu_init(&int_param);
-  mpu_set_sensors(INV_XYZ_GYRO | INV_XYZ_ACCEL);
-  mpu_configure_fifo(INV_XYZ_GYRO | INV_XYZ_ACCEL);
-  mpu_set_sample_rate(200);
+  mpu_init(&int_param);                               // 复位并唤醒 MPU6050
+  mpu_set_sensors(INV_XYZ_GYRO | INV_XYZ_ACCEL);      // 使能六轴传感器
+  mpu_configure_fifo(INV_XYZ_GYRO | INV_XYZ_ACCEL);   // FIFO 存六轴原始数据
+  mpu_set_sample_rate(200);                           // 采样率 200Hz
 
-  dmp_load_motion_driver_firmware();
+  dmp_load_motion_driver_firmware();                  // 加载 DMP 固件
   dmp_enable_feature(DMP_FEATURE_6X_LP_QUAT | DMP_FEATURE_GYRO_CAL |
-                     DMP_FEATURE_SEND_RAW_ACCEL | DMP_FEATURE_SEND_RAW_GYRO);
-  dmp_set_fifo_rate(200);
-  mpu_set_dmp_state(1);
+                     DMP_FEATURE_SEND_RAW_ACCEL | DMP_FEATURE_SEND_RAW_GYRO); // 四元数+陀螺校准+输出原始数据
+  dmp_set_fifo_rate(200);                             // DMP 输出速率 200Hz（与采样率一致）
+  mpu_set_dmp_state(1);                               // 启动 DMP 运算，开始向 FIFO 写数据
 
   /* ====== 循环读取 ====== */
-  mpu6050_xyz xyz; // 六个原始数据：陀螺仪 + 加�?�度�???
-  mpu6050_pry pry; // 解算后的欧拉�???
-  usart_datatosend tosend;
-  short sensors;
-  unsigned char more;
-  long quat[4];
-  unsigned long timestamp;
-  uint32_t tick = osKernelGetTickCount();
+  mpu6050_xyz xyz;          // 六轴原始数据：陀螺仪 + 加速度计
+  mpu6050_pry pry;          // 解算后的欧拉角（度）
+  usart_datatosend tosend;  // 发给 usart1send 任务的消息
+  short sensors;            // dmp_read_fifo 输出：本包携带的数据类型标志
+  unsigned char more;       // dmp_read_fifo 输出：FIFO 中剩余包数
+  long quat[4];             // DMP 输出的四元数（Q30 定点数）
+  unsigned long timestamp;  // DMP 时间戳（未使用）
+  uint32_t tick = osKernelGetTickCount(); // 周期调度的起点
 
   for (;;)
   {
     tick += 5;
     osDelayUntil(tick);
 
-    /* 直接把结构体成员数组喂给 dmp_read_fifo */
-    if (dmp_read_fifo(xyz.gyro, xyz.accel, quat, &timestamp, &sensors, &more) == 0)
+    /* ===== 排空式读取 =====
+     * MPU6050 与 STM32 两颗晶振存在微小速率差，FIFO 会缓慢积压；
+     * 每周期把积压的包全部读出（上限 4 包），只保留最新一包，
+     * 使 fifo_count 永远到不了溢出门槛，避开 mpu_reset_fifo 的 DMP_RST 死路 */
+    uint8_t pkt_cnt = 0;
+    while (pkt_cnt < 4 &&
+           dmp_read_fifo(xyz.gyro, xyz.accel, quat, &timestamp, &sensors, &more) == 0)
+    {
+      pkt_cnt++;
+      if (more == 0)              /* FIFO 已空，提前收工 */
+        break;
+    }
+
+    if (pkt_cnt > 0)              /* 本周期拿到过数据才发送 */
     {
       /* 四元数转欧拉角（度） */
       float q0 = quat[0] / 1073741824.0f; // / 2^30
@@ -522,11 +543,12 @@ void Startmpu6050readTask(void *argument)
       float q2 = quat[2] / 1073741824.0f;
       float q3 = quat[3] / 1073741824.0f;
 
-      /* 原始数据：xyz.gyro[0~2] 角�?�度，xyz.accel[0~2] 加�?�度 */
+      /* 原始数据：xyz.gyro[0~2] 角速度，xyz.accel[0~2] 加速度 */
       /* 欧拉角结果写入结构体 */
       pry.pitch = asin(-2 * q1 * q3 + 2 * q0 * q2) * 57.29578f;
       pry.roll = atan2(2 * q2 * q3 + 2 * q0 * q1, -2 * q1 * q1 - 2 * q2 * q2 + 1) * 57.29578f;
       pry.yaw = atan2(2 * (q1 * q2 + q0 * q3), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3) * 57.29578f;
+      /* 按当前发送模式选择数据内容：0=原始六轴 1=欧拉角 */
       if (mpu_usart_sendmode == 0)
       {
         tosend.type = mpu_xyz;
@@ -538,7 +560,6 @@ void Startmpu6050readTask(void *argument)
         tosend.data.pry = pry;
       }
       osMessageQueuePut(usartsendHandle, &tosend, 0, 0);
-      /* TODO: �??? xyz / pry 通过 USART1 或其他方式输�??? */
     }
   }
   /* USER CODE END Startmpu6050readTask */
@@ -554,15 +575,15 @@ void Startmpu6050readTask(void *argument)
 void Startusart1receiveTask(void *argument)
 {
   /* USER CODE BEGIN Startusart1receiveTask */
-  uint8_t *receive;   
-  uint8_t receive_idx; 
-  uint8_t receive_len;
-  char cmdbuf[34];
-  command cmd;    
+  uint8_t *receive;    // 指向本帧所在的缓冲区
+  uint8_t receive_idx; // 缓冲区编号（IDLE 中断经队列传来）
+  uint8_t receive_len; // 本帧实际长度（字节）
+  char cmdbuf[34];     // 帧内容副本（补 '\0' 后供字符串解析）
+  command cmd;         // 解析结果
 
   for (;;)
   {
-
+    /* 阻塞等待 IDLE 中断投递的缓冲区编号 */
     osMessageQueueGet(usart1_receive_dataHandle, &receive_idx, NULL, HAL_MAX_DELAY);
     receive = usart1_receive_pool[receive_idx];
     receive_len = usart1_receive_len[receive_idx];
@@ -577,8 +598,7 @@ void Startusart1receiveTask(void *argument)
       switch (cmd.type)
       {
       case mpu_mode_set:
-
-        mpu_usart_sendmode = (char)cmd.data[0];
+        mpu_usart_sendmode = (char)cmd.data[0]; // 切换发送模式
         break;
       default:
         break;
