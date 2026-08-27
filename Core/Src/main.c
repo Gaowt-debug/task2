@@ -26,24 +26,18 @@
 #include <string.h>
 
 /* ============================ USART1 收发逻辑（自 task1 移植） ============================
- * 不定长接收 + 回显发送，数据流：
+ * 不定长接收 + DMA 发送接口，数据流：
  *   DMA 收数据到缓冲池 → IDLE 中断收尾（算帧长/入队/切缓冲）
- *   → 队列 usart1_receive_data 传"缓冲区编号" → usart1receive 任务拼帧
- *   → 队列 usart1_send_frame 传整帧 → usart1send 任务 DMA 回发
- *   （发送用二值信号量 uart_tx_sem 防重入，TxCplt 回调释放）
- * 与 task1 的差异：task1 由 Task3 一个任务做完"取帧+发送"，
- * task2 拆分为 usart1receive（取帧拼包）与 usart1send（DMA 发送）两个任务。
+ *   → 队列 usart1_receive_data 传"缓冲区编号" → usart1receive 任务取数
+ *   → 后续处理自行添加
+ * 发送：usart1send 任务中 DMA 发送（二值信号量 uart_tx_sem 防重入，
+ *   TxCplt 回调释放）
  * ========================================================================================= */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-/* 待发送整帧：usart1receive 任务拼好 → 队列 → usart1send 任务发出 */
-typedef struct
-{
-	uint16_t len;        // 帧总长度（报头 + 数据 + 换行）
-	uint8_t  data[47];   // 13 字节 "Receive Data:" + 最多 32 字节数据 + "\n" + 余量
-} usart1_tx_frame;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -94,8 +88,6 @@ uint8_t usart1_receive_pool_idx=0;        // 当前 DMA 正在写入的缓冲区
 /*==================== 队列 / 信号量句柄（在 main 中创建） ====================*/
 /* IDLE 中断 → usart1receive：传缓冲区编号（索引而非数据本体） */
 osMessageQueueId_t usart1_receive_dataHandle;
-/* usart1receive → usart1send：传拼装好的整帧（按值拷贝） */
-osMessageQueueId_t usart1_send_frameHandle;
 /* UART 发送同步信号量：usart1send 发送前 acquire，DMA 发送完成中断里 release，
  * 保证同一时刻只有一次 DMA 发送在进行，防止下次发送覆盖上次还没发完的数据 */
 osSemaphoreId_t uart_tx_sem;
@@ -176,8 +168,6 @@ int main(void)
   /* IDLE 中断 → usart1receive：传缓冲区编号（uint8_t，深度 3；
    * 队列满时非阻塞 put 直接丢帧索引，不阻塞 DMA 接收） */
   usart1_receive_dataHandle = osMessageQueueNew(3, sizeof(uint8_t), NULL);
-  /* usart1receive → usart1send：传整帧 usart1_tx_frame（深度 3） */
-  usart1_send_frameHandle = osMessageQueueNew(3, sizeof(usart1_tx_frame), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -369,16 +359,16 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 void Startusart1sendTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  usart1_tx_frame frame = {0};   // 从发送队列取出的整帧
+  uint8_t tosend[47]={0};   // 发送缓冲：数据来源与内容自行填充
+  uint16_t tosend_len=0;    // 发送长度（字节）
   /* Infinite loop */
   for(;;)
   {
-    /* 阻塞等待 usart1receive 拼装好的整帧（队列空时挂起，不占 CPU） */
-    osMessageQueueGet(usart1_send_frameHandle, &frame, NULL, HAL_MAX_DELAY);
-
-    /* 拿到发送权才能发（DMA 忙则阻塞），发完由 TxCplt 回调释放信号量 */
+    /* ====== USART1 DMA 发送接口（自 task1 移植） ======
+     * 拿到发送权才能发（DMA 忙则阻塞），发完由 TxCplt 回调释放信号量，
+     * 保证同一时刻只有一次 DMA 发送在进行 */
     osSemaphoreAcquire(uart_tx_sem, HAL_MAX_DELAY);
-    HAL_UART_Transmit_DMA(&huart1, frame.data, frame.len);
+    HAL_UART_Transmit_DMA(&huart1, tosend, tosend_len);
   }
   /* USER CODE END 5 */
 }
@@ -411,37 +401,16 @@ void Startmpu6050readTask(void *argument)
 void Startusart1receiveTask(void *argument)
 {
   /* USER CODE BEGIN Startusart1receiveTask */
-  usart1_tx_frame frame = {0};  // 拼装中的发送帧
   uint8_t *receive;             // 指向缓冲池中本次收到的数据
   uint8_t receive_idx;          // IDLE 中断传来的缓冲区编号
   uint8_t receive_len;          // 本帧实际长度
-  uint16_t offset;              // memcpy 拼接游标：当前写入位置
   /* Infinite loop */
   for(;;)
   {
-    /* 阻塞等待 IDLE 中断投递的缓冲区编号（队列空时挂起） */
+
     osMessageQueueGet(usart1_receive_dataHandle, &receive_idx, NULL, HAL_MAX_DELAY);
-
-    /* 清空发送帧，防止上次残留 */
-    memset(&frame, 0, sizeof(frame));
-
-    /* 按编号从缓冲池取出数据和帧长 */
     receive = usart1_receive_pool[receive_idx];
     receive_len = usart1_receive_len[receive_idx];
-
-    /* 用 memcpy+offset 拼接（不用 strcat：数据里可能有 0x00）：
-     * "Receive Data:" + 原始数据 + "\n" */
-    offset = 0;
-    memcpy(frame.data + offset, "Receive Data:", 13);
-    offset += 13;
-    memcpy(frame.data + offset, receive, receive_len);
-    offset += receive_len;
-    memcpy(frame.data + offset, "\n", 1);
-    offset += 1;
-    frame.len = offset;
-
-    /* 整帧入队交给 usart1send 发送（非阻塞：队列满则丢帧，不阻塞接收链路） */
-    osMessageQueuePut(usart1_send_frameHandle, &frame, 0, 0);
   }
   /* USER CODE END Startusart1receiveTask */
 }
