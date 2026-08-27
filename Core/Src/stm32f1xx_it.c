@@ -63,13 +63,11 @@ extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN EV */
-/* USART1 接收缓冲池与队列句柄（自 task1 移植，定义在 main.c） */
+/* USART1 接收缓冲池与队列句柄（自 task1 移植，定义在 main.c�? */
 extern uint8_t usart1_receive_pool[5][33];
 extern uint8_t usart1_receive_len[5];
 extern uint8_t usart1_receive_pool_idx;
 extern osMessageQueueId_t usart1_receive_dataHandle;
-/* USER CODE END EV */
-
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -218,30 +216,30 @@ void TIM4_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
-  /* ============ USART1 空闲中断收帧（不定长接收核心逻辑，自 task1 移植） ============
+  /* ============ USART1 空闲中断收帧（不定长接收核心逻辑，自 task1 移植�? ============
    * 原理：DMA 循环把收到的字节写入缓冲池当前格；一帧数据发完后总线
-   * 空闲触发 IDLE 中断，此处收尾：算出实际帧长 → 通知任务 → 切换
-   * 到下一格缓冲重启 DMA。
+   * 空闲触发 IDLE 中断，此处收尾：算出实际帧长 �? 通知任务 �? 切换
+   * 到下�?格缓冲重�? DMA�?
    */
   uint8_t len_e;
   if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE) != RESET)
   {
     __HAL_UART_CLEAR_IDLEFLAG(&huart1);            // 清除 IDLE 标志
     HAL_UART_DMAStop(&huart1);                     // 停止本次 DMA 传输
-    /* DMA 剩余计数 = 32 - 实际收到字节数，反推出本帧长度 */
+    /* DMA 剩余计数 = 32 - 实际收到字节数，反推出本帧长�? */
     len_e = __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
     usart1_receive_len[usart1_receive_pool_idx] = 32 - len_e;
 
-    /* 把"缓冲区编号"（不是数据本体）入队，任务凭编号去缓冲池取数据；
-     * 非阻塞 put：队列满（返回 osErrorResource）时丢弃本帧索引 */
+    /* �?"缓冲区编�?"（不是数据本体）入队，任务凭编号去缓冲池取数据；
+     * 非阻�? put：队列满（返�? osErrorResource）时丢弃本帧索引 */
     if(osMessageQueuePut(usart1_receive_dataHandle, &usart1_receive_pool_idx, NULL, 0)!=osErrorResource)
     {
 
     }
     /* 无论入队是否成功都切换到下一格：队列满时新数据覆盖旧格，
-     * 不阻塞 DMA 接收（丢新保旧策略的已知取舍） */
+     * 不阻�? DMA 接收（丢新保旧策略的已知取舍�? */
     usart1_receive_pool_idx = (usart1_receive_pool_idx + 1) % 5;
-    /* 用新的缓冲区重启 DMA 接收，等下一帧 */
+    /* 用新的缓冲区重启 DMA 接收，等下一�? */
     HAL_UART_Receive_DMA(&huart1, usart1_receive_pool[usart1_receive_pool_idx], 32);
   }
 

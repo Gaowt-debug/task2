@@ -1,5 +1,8 @@
 --cpu Cortex-M3
 "task2\startup_stm32f103xb.o"
+"task2\inv_mpu.o"
+"task2\inv_mpu_dmp_motion_driver.o"
+"task2\sw_i2c.o"
 "task2\main.o"
 "task2\freertos.o"
 "task2\stm32f1xx_it.o"

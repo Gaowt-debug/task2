@@ -10,6 +10,7 @@
       <TargetName>task2</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
+      <pCCUsed>5060528::V5.06 update 5 (build 528)::ARMCC</pCCUsed>
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -203,7 +204,7 @@
             <Ro2Chk>0</Ro2Chk>
             <Ro3Chk>0</Ro3Chk>
             <Ir1Chk>1</Ir1Chk>
-            <Ir2Chk>1</Ir2Chk>
+            <Ir2Chk>0</Ir2Chk>
             <Ra1Chk>0</Ra1Chk>
             <Ra2Chk>0</Ra2Chk>
             <Ra3Chk>0</Ra3Chk>
@@ -333,9 +334,9 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define>USE_HAL_DRIVER,STM32F103xB</Define>
+              <Define>USE_HAL_DRIVER,STM32F103xB,MPU6050,EMPL_TARGET_STM32</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc; ../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy; ../Drivers/STM32F1xx_HAL_Driver/Inc; ../Middlewares/Third_Party/FreeRTOS/Source/include; ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2; ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM3; ../Drivers/CMSIS/Device/ST/STM32F1xx/Include; ../Drivers/CMSIS/Include</IncludePath>
+              <IncludePath>../Core/Inc;  ../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;  ../Drivers/STM32F1xx_HAL_Driver/Inc;  ../Middlewares/Third_Party/FreeRTOS/Source/include;  ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;  ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM3;  ../Drivers/CMSIS/Device/ST/STM32F1xx/Include;  ../Drivers/CMSIS/Include;  ..\Core\eMPL</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -389,6 +390,46 @@
         <Group>
           <GroupName>Application/User/Core</GroupName>
           <Files>
+            <File>
+              <FileName>dmpKey.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\eMPL\dmpKey.h</FilePath>
+            </File>
+            <File>
+              <FileName>dmpmap.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\eMPL\dmpmap.h</FilePath>
+            </File>
+            <File>
+              <FileName>inv_mpu.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\eMPL\inv_mpu.c</FilePath>
+            </File>
+            <File>
+              <FileName>inv_mpu.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\eMPL\inv_mpu.h</FilePath>
+            </File>
+            <File>
+              <FileName>inv_mpu_dmp_motion_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\eMPL\inv_mpu_dmp_motion_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>inv_mpu_dmp_motion_driver.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\eMPL\inv_mpu_dmp_motion_driver.h</FilePath>
+            </File>
+            <File>
+              <FileName>sw_i2c.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Inc\sw_i2c.c</FilePath>
+            </File>
+            <File>
+              <FileName>sw_i2c.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\sw_i2c.h</FilePath>
+            </File>
             <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>

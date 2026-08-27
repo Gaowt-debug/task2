@@ -16,11 +16,14 @@
                 "Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2",
                 "Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM3",
                 "Drivers/CMSIS/Device/ST/STM32F1xx/Include",
-                "Drivers/CMSIS/Include"
+                "Drivers/CMSIS/Include",
+                "Core/eMPL"
             ],
             "defines": [
                 "USE_HAL_DRIVER",
                 "STM32F103xB",
+                "MPU6050",
+                "EMPL_TARGET_STM32",
                 "RTE_COMPONENTS_H",
                 "CMSIS_device_header=\"stm32f10x.h\"",
                 "__CC_ARM",
